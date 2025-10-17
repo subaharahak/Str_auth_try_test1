@@ -38,7 +38,7 @@ def full_stripe_check(cc, mm, yy, cvv):
             return {"status": "Declined", "response": "Failed to get payment nonce.", "decline_type": "process_error"}
         ajax_nonce = payment_nonce_match.group(1)
 
-        # Step 5: Get Stripe payment token - USING EXACT SAME REQUEST AS gate.py
+        # Step 5: Get Stripe payment token
         stripe_headers = {
             'accept': 'application/json',
             'accept-language': 'en-US,en;q=0.9',
@@ -84,23 +84,37 @@ def full_stripe_check(cc, mm, yy, cvv):
         stripe_response = session.post(
             'https://api.stripe.com/v1/payment_methods', 
             headers=stripe_headers, 
-            data=stripe_data
+            data=stripe_data,
+            timeout=30
         )
         
         print(f"Stripe Status: {stripe_response.status_code}")
-        print(f"Stripe Response: {stripe_response.text}")
+        print(f"Stripe Response Headers: {dict(stripe_response.headers)}")
+        print(f"Stripe Response Text (first 500 chars): {stripe_response.text[:500]}")
         
-        if stripe_response.status_code == 200:
+        # Check if response is JSON
+        content_type = stripe_response.headers.get('content-type', '')
+        if 'application/json' in content_type:
             stripe_json = stripe_response.json()
-            payment_token = stripe_json.get('id')
             
-            if payment_token and payment_token.startswith('pm_'):
-                print(f"Successfully extracted payment token: {payment_token}")
+            if stripe_response.status_code == 200:
+                payment_token = stripe_json.get('id')
+                
+                if payment_token and payment_token.startswith('pm_'):
+                    print(f"Successfully extracted payment token: {payment_token}")
+                else:
+                    return {"status": "Declined", "response": "No payment token in successful response", "decline_type": "process_error"}
             else:
-                return {"status": "Declined", "response": "No payment token in successful response", "decline_type": "process_error"}
+                error_msg = stripe_json.get('error', {}).get('message', 'Stripe API error')
+                return {"status": "Declined", "response": f"Stripe error: {error_msg}", "decline_type": "process_error"}
         else:
-            error_msg = stripe_response.json().get('error', {}).get('message', 'Stripe API error')
-            return {"status": "Declined", "response": f"Stripe error: {error_msg}", "decline_type": "process_error"}
+            # Not JSON - probably HTML error page
+            if stripe_response.status_code == 403:
+                return {"status": "Declined", "response": "Stripe blocked request (403 Forbidden)", "decline_type": "process_error"}
+            elif stripe_response.status_code == 429:
+                return {"status": "Declined", "response": "Stripe rate limit exceeded", "decline_type": "process_error"}
+            else:
+                return {"status": "Declined", "response": f"Stripe returned non-JSON response (Status: {stripe_response.status_code})", "decline_type": "process_error"}
 
         # Step 6: Submit to website
         site_data = {
@@ -119,6 +133,8 @@ def full_stripe_check(cc, mm, yy, cvv):
             error_message = response_json.get('data', {}).get('error', {}).get('message', 'Declined by website.')
             return {"status": "Declined", "response": error_message, "decline_type": "card_decline"}
 
+    except requests.exceptions.Timeout:
+        return {"status": "Declined", "response": "Stripe request timeout", "decline_type": "process_error"}
     except Exception as e:
         return {"status": "Declined", "response": f"An unexpected error occurred: {str(e)}", "decline_type": "process_error"}
 
